@@ -1,0 +1,104 @@
+# Die Libraries sollte zuerst mit dem Befel install.packages("") installiert werden. 
+library(googleAuthR)
+library(searchConsoleR)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+
+
+#Zuerst immer nur bis zum Login starten! Danach den restlichen Code laufen lassen.
+scr_auth()
+
+## Daten in der GSC sind immer um 3 Tage verzögert. Daher wird das aktuelle Datum - 3 gerechnet
+
+start <- Sys.Date() -93
+end <- Sys.Date() -3
+
+## Hier sollte die Domain eingetragen werden. Hierzu sollte nochmals eine List-Abfrage gestarten werden.
+website <- "beispiel.de"
+
+## Welche Metriken sollen runtergeladen werden? date, query, page, device, country
+download_dimensions <- c('query','page')
+
+## Welche Google Search soll untersucht werden? 'web', 'video' or 'image'
+type <- c('web')
+
+
+## rowLimit = 50.000 
+
+searchquery <- search_analytics(siteURL = website,
+                                startDate = start, 
+                                endDate = end, 
+                                dimensions = download_dimensions,
+                                searchType = type, 
+                                rowLimit = 50000)
+
+##Erstmaliges Filtern den Rohdaten
+
+gsc_data_filtered <-searchquery %>%
+  filter(position<=20) %>%
+  filter(clicks!=0) %>%
+  filter(impressions>=100) %>%
+  filter(!str_detect(query, 'Brand|BRÄND|Brend|BE|Brra|'))
+
+
+##Berechnung der Metriken auf Keywordebene
+query_calculation <-gsc_data_filtered %>%
+  group_by(query) %>%
+  mutate(clicksT= sum(clicks)) %>%
+  mutate(impressionsT= sum(impressions)) %>%
+  group_by(page, add=TRUE) %>%
+  mutate(per= clicks/clicksT)%>%
+  mutate(perimp= impressions/impressionsT)%>%
+mutate(positionRound = round(position)) 
+
+
+##Berechnung der Metriken auf URL-Ebene
+page_calculation <- query_calculation %>%
+  group_by(page) %>%
+  mutate(positionRound = round(position)) %>%
+  mutate(clickP = clicks / sum(clicks)) %>%
+  mutate(impressionsP = impressions / sum(impressions)) %>%
+  ungroup()
+
+#Umbenennung der Datei für das weitere vorgehen
+
+gsc_data_final <- page_calculation 
+
+
+
+library(dplyr)
+library(ggplot2)
+
+## Datenbereinigung
+searchquery$serp <- cut(searchquery$position,
+                     breaks = seq(1, 100, 10),
+                     labels = as.character(1:9),
+                     include.lowest = TRUE,
+                     ordered_result = TRUE)
+
+## Metriken berechnen für die Click-Curve Analyse
+
+click_curve <- gsc_data_final %>%
+  group_by(positionRound) %>%
+  summarise(CTRmean = mean(clicks) / mean(impressions),
+            n = n(),
+            click.sum = sum(clicks),
+            impressions.sum = sum(impressions),
+            sd = sd(ctr),
+            E = poisson.test(click.sum)$conf.int[2] / poisson.test(impressions.sum)$conf.int[1],
+            lower = CTRmean - E/2,
+            upper = CTRmean + E/2) %>% ungroup()
+
+## Unterschiede in % berechnen
+click_curve <- click_curve %>% 
+  mutate(CTR1 = CTRmean[1] / CTRmean,
+         CTR1.upper = upper[1] / upper,
+         CTR1.lower = lower[1] / lower)
+
+#Zusammenführen der Daten
+
+final <- merge(click_curve,gsc_data_final,by="positionRound",all=TRUE )
+
+#Speichern der Daten mit Datums&Zeitangabe 
+write.csv2(final, paste0("\\GSC Auswertungen\\GSC_auswertung_new_", format(Sys.time(), "%d-%b-%Y %H.%M"), ".csv"))
